@@ -1,0 +1,644 @@
+---
+name: minecraft-fabric-coding
+description: >
+  Expert guide for developing Minecraft Fabric mods using Java. Use this skill for ANY request
+  involving Fabric mod development, including: setting up a mod project, writing Java code for
+  Minecraft mods, working with Mixins, registering items/blocks/entities, handling events,
+  creating commands, networking between client and server, access wideners, data generation,
+  world generation, rendering, and debugging. Also use when the user asks about Java OOP concepts
+  in the context of Minecraft modding (classes, interfaces, generics, inheritance, polymorphism).
+  Trigger on keywords: Fabric, mod, mixin, ModInitializer, fabric.mod.json, Gradle loom,
+  Yarn mappings, ModItems, ModBlocks, CommandRegistrationCallback, ClientModInitializer, etc.
+---
+
+# Minecraft Fabric Mod Development Skill
+
+## Overview
+
+Fabric is a **modular, lightweight modding toolchain** for Minecraft: Java Edition 1.14+.
+Core components:
+- **Fabric Loader** – Loads mods at runtime, handles mod metadata
+- **Fabric API** – Cross-compatibility hooks, events, utilities on top of vanilla
+- **Fabric Loom** – Gradle plugin for deobfuscated dev environment
+- **Yarn / Mojang Mappings** – Human-readable name mappings for Minecraft internals
+- **Mixin** – Bytecode injection library to modify Minecraft classes at runtime
+- **MixinExtras** – Bundled since Loader 0.15; provides compatible, precise injectors
+
+Always check latest versions at: https://fabricmc.net/develop/
+
+---
+
+## 1. Project Setup
+
+### Requirements
+- Java 21 (for MC 1.21+), Java 17 (for MC 1.18–1.20), Java 8 (for MC 1.14–1.17)
+- IntelliJ IDEA (strongly recommended) + **Minecraft Development plugin** (MCDev)
+- Gradle (managed by wrapper in project)
+
+### Creating a New Project
+Use the **Fabric Template Mod Generator**: https://fabricmc.net/develop/  
+Or clone: https://github.com/FabricMC/fabric-example-mod
+
+Package naming convention: lowercase, dot-separated, reversed domain → `com.example.mymod`
+
+### Key Files
+
+**`build.gradle`** (core build config):
+```groovy
+plugins {
+    id 'fabric-loom' version '1.x.x'
+    id 'maven-publish'
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings loom.officialMojangMappings()
+    // OR: mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+}
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.release = 21
+}
+```
+
+**`gradle.properties`** (version pins):
+```properties
+minecraft_version=1.21.1
+yarn_mappings=1.21.1+build.3
+loader_version=0.16.x
+fabric_version=0.x.x+1.21.1
+maven_group=com.example
+archive_base_name=mymod
+```
+
+**`fabric.mod.json`** (mod metadata, in `src/main/resources/`):
+```json
+{
+  "schemaVersion": 1,
+  "id": "mymod",
+  "version": "1.0.0",
+  "name": "My Mod",
+  "description": "A description.",
+  "icon": "assets/mymod/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["com.example.mymod.MyMod"],
+    "client": ["com.example.mymod.client.MyModClient"]
+  },
+  "mixins": ["mymod.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "fabric-api": "*",
+    "minecraft": "~1.21"
+  }
+}
+```
+> ⚠️ Since MC 1.19.2, Fabric API mod ID is `fabric-api` (not `fabric`).
+
+### IntelliJ Setup
+1. Import via `File → Open` → select `build.gradle`
+2. After Gradle sync: close project, re-open to fix run configs
+3. If run configs still missing: set "Build and run using" → **Gradle** in Gradle Settings
+4. Run `gradlew genSources` (or `./gradlew genSources`) to generate decompiled Minecraft source
+5. **Never** run the `idea` Gradle task — it breaks the dev environment
+6. To reset broken cache: `gradlew cleanloom`
+
+---
+
+## 2. Mod Entrypoints
+
+```java
+// Main entrypoint (server + client, runs on both sides)
+public class MyMod implements ModInitializer {
+    public static final String MOD_ID = "mymod";
+    public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+
+    @Override
+    public void onInitialize() {
+        // Register items, blocks, events, commands here
+        ModItems.initialize();
+        ModBlocks.initialize();
+    }
+}
+
+// Client-only entrypoint
+public class MyModClient implements ClientModInitializer {
+    @Override
+    public void onInitializeClient() {
+        // Register client-side things: renderers, keybinds, HUD elements
+    }
+}
+```
+
+**Environment annotations** to restrict code to one side:
+```java
+@Environment(EnvType.CLIENT)  // Only compiled/run on client
+@Environment(EnvType.SERVER)  // Only compiled/run on server
+```
+
+---
+
+## 3. Items
+
+### Registering Items
+```java
+public class ModItems {
+    public static final Item CUSTOM_ITEM = register("custom_item",
+        props -> new Item(props), new Item.Properties());
+
+    public static <T extends Item> T register(String name,
+            Function<Item.Properties, T> factory, Item.Properties props) {
+        ResourceKey<Item> key = ResourceKey.create(Registries.ITEM,
+            Identifier.fromNamespaceAndPath(MyMod.MOD_ID, name));
+        return Registry.register(BuiltInRegistries.ITEM, key, factory.apply(props));
+    }
+
+    public static void initialize() {} // triggers static init
+}
+```
+
+### Adding to Creative Tab
+```java
+ItemGroupEvents.modifyEntriesEvent(CreativeModeTabs.INGREDIENTS)
+    .register(itemGroup -> itemGroup.accept(ModItems.CUSTOM_ITEM));
+```
+
+### Special Registries
+```java
+// Composting (30% chance)
+CompostingChanceRegistry.INSTANCE.add(ModItems.CUSTOM_ITEM, 0.3f);
+
+// Fuel (30 seconds = 600 ticks; 20 ticks = 1 second)
+FuelRegistryEvents.BUILD.register((builder, context) ->
+    builder.add(ModItems.CUSTOM_ITEM, 30 * 20));
+```
+
+### Item Resources (in `assets/mymod/`)
+- Texture: `textures/item/custom_item.png` (16×16 px)
+- Model JSON: `models/item/custom_item.json`
+  ```json
+  { "parent": "minecraft:item/generated", "textures": { "layer0": "mymod:item/custom_item" } }
+  ```
+- Translation: `lang/en_us.json` → `"item.mymod.custom_item": "Custom Item"`
+
+### Custom Item Interactions
+```java
+public class CustomItem extends Item {
+    @Override
+    public InteractionResult use(Level level, Player user, InteractionHand hand) {
+        if (level.isClientSide()) return InteractionResult.PASS; // server-only logic
+        // do something
+        return InteractionResult.SUCCESS;
+    }
+
+    @Override
+    public InteractionResult useOn(UseOnContext context) {
+        // called when used on a block
+        return InteractionResult.PASS;
+    }
+}
+```
+
+---
+
+## 4. Blocks
+
+### Registering Blocks
+```java
+public class ModBlocks {
+    public static final Block CUSTOM_BLOCK = register("custom_block",
+        new Block(BlockBehaviour.Properties.of().strength(2.0f)));
+
+    private static Block register(String name, Block block) {
+        ResourceKey<Block> key = ResourceKey.create(Registries.BLOCK,
+            Identifier.fromNamespaceAndPath(MyMod.MOD_ID, name));
+        // Also register BlockItem
+        Registry.register(BuiltInRegistries.ITEM,
+            Identifier.fromNamespaceAndPath(MyMod.MOD_ID, name),
+            new BlockItem(block, new Item.Properties()));
+        return Registry.register(BuiltInRegistries.BLOCK, key, block);
+    }
+
+    public static void initialize() {}
+}
+```
+
+### Block Resources (in `assets/mymod/`)
+- Texture: `textures/block/custom_block.png`
+- Block model: `models/block/custom_block.json`
+- Item model (client item): `items/custom_block.json`
+- Blockstate definition: `blockstates/custom_block.json`
+  ```json
+  { "variants": { "": { "model": "mymod:block/custom_block" } } }
+  ```
+- Loot table: `data/mymod/loot_table/blocks/custom_block.json`
+- Translation: `lang/en_us.json` → `"block.mymod.custom_block": "Custom Block"`
+
+For complex blocks: consider **Data Generation** to automate models, loot tables, and blockstates.
+
+---
+
+## 5. Events (Fabric API)
+
+Events are stored in static `EVENT` fields on callback interfaces. Register with `.register()`.
+
+```java
+// Register in onInitialize():
+
+// Player hurts themselves when breaking blocks barehanded
+AttackBlockCallback.EVENT.register((player, level, hand, pos, direction) -> {
+    BlockState state = level.getBlockState(pos);
+    if (!player.isSpectator() && player.getMainHandItem().isEmpty()
+            && state.requiresCorrectToolForDrops()
+            && level instanceof ServerLevel serverLevel) {
+        player.hurtServer(serverLevel, level.damageSources().generic(), 1.0F);
+    }
+    return InteractionResult.PASS;
+});
+
+// Loot table modification (add items to vanilla loot tables)
+LootTableEvents.MODIFY.register((key, tableBuilder, source, registries) -> {
+    if (source.isBuiltin() && MY_TARGET_LOOT_ID.equals(key)) {
+        tableBuilder.withPool(LootPool.lootPool().add(LootItem.lootTableItem(Items.EGG)));
+    }
+});
+
+// Server tick
+ServerTickEvents.END_SERVER_TICK.register(server -> { /* tick logic */ });
+```
+
+### Creating Custom Events
+1. Define a callback `@FunctionalInterface`
+2. Create an `Event<YourCallback>` instance via `EventFactory.createArrayBacked()`
+3. Fire the event from a Mixin by calling `YOUR_EVENT.invoker().yourMethod(...)`
+
+---
+
+## 6. Commands (Brigadier)
+
+```java
+// In ModInitializer.onInitialize() or a separate class:
+CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
+    dispatcher.register(Commands.literal("mycommand")
+        .then(Commands.argument("value", IntegerArgumentType.integer())
+            .executes(context -> {
+                int val = IntegerArgumentType.getInteger(context, "value");
+                context.getSource().sendSuccess(
+                    () -> Component.literal("Value: " + val), false);
+                return 1;
+            }))
+        .executes(context -> {
+            context.getSource().sendSuccess(
+                () -> Component.literal("Called /mycommand"), false);
+            return 1;
+        }));
+});
+```
+
+**Permission check**:
+```java
+.requires(source -> source.permissions().hasPermission(Permissions.COMMANDS_MODERATOR))
+```
+
+**Custom argument type**: implement `ArgumentType<T>`, register with `ArgumentTypeRegistry.registerArgumentType(...)`.
+
+---
+
+## 7. Networking (Client ↔ Server)
+
+Packets bridge the logical client and logical server. Even in singleplayer, an integrated server runs.
+**Packet handlers execute on the network thread** — use `.execute()` to dispatch to the main thread.
+
+### Define a Payload
+```java
+// A Record implementing CustomPacketPayload
+public record MyPayload(BlockPos pos) implements CustomPacketPayload {
+    public static final CustomPacketPayload.Type<MyPayload> TYPE =
+        new CustomPacketPayload.Type<>(Identifier.fromNamespaceAndPath("mymod", "my_packet"));
+    public static final StreamCodec<RegistryFriendlyByteBuf, MyPayload> CODEC =
+        StreamCodec.composite(BlockPos.STREAM_CODEC, MyPayload::pos, MyPayload::new);
+    @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
+}
+```
+
+### Register & Send (Server → Client)
+```java
+// Registration (in onInitialize or onInitializeClient):
+PayloadTypeRegistry.playS2C().register(MyPayload.TYPE, MyPayload.CODEC);
+
+// Send from server:
+ServerPlayNetworking.send(serverPlayer, new MyPayload(blockPos));
+
+// Receive on client (in ClientModInitializer):
+ClientPlayNetworking.registerGlobalReceiver(MyPayload.TYPE, (payload, context) -> {
+    context.client().execute(() -> {
+        // safe to access game state here
+        BlockPos pos = payload.pos();
+    });
+});
+```
+
+### Register & Send (Client → Server)
+```java
+PayloadTypeRegistry.playC2S().register(MyPayload.TYPE, MyPayload.CODEC);
+
+// Send from client:
+ClientPlayNetworking.send(new MyPayload(blockPos));
+
+// Receive on server:
+ServerPlayNetworking.registerGlobalReceiver(MyPayload.TYPE, (payload, context) -> {
+    context.player().server.execute(() -> {
+        // server-side logic
+    });
+});
+```
+
+---
+
+## 8. Mixins
+
+Mixins modify Minecraft's **compiled bytecode at runtime** before a class is loaded.
+Only Java Mixins are supported (Kotlin requires compatibility layers).
+MixinExtras is bundled since Fabric Loader 0.15 (v0.5.0 since Loader 0.17.0).
+
+### Setup
+1. Create `mymod.mixins.json` in `src/main/resources/`:
+```json
+{
+  "required": true,
+  "package": "com.example.mymod.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [],
+  "client": ["ExampleClientMixin"],
+  "injectors": { "defaultRequire": 1 }
+}
+```
+2. Reference it in `fabric.mod.json` under `"mixins": ["mymod.mixins.json"]`
+
+### Mixin Class Conventions
+- Name: `TargetClassMixin` (e.g. `PlayerEntityMixin`)
+- Make the class `abstract` → prevents accidental instantiation, no need to implement all methods
+- Keep it package-private (not `public`)
+- Never instantiate a Mixin class
+
+```java
+@Mixin(SomeVanillaClass.class)
+abstract class SomeVanillaClassMixin {
+    // injectors here
+}
+```
+
+### Core Injector: `@Inject`
+
+```java
+// Inject at head of a void method
+@Inject(method = "targetMethod()V", at = @At("HEAD"))
+private void onTargetMethod(CallbackInfo ci) { /* ... */ }
+
+// Inject at return and cancel (return early)
+@Inject(method = "getValue()I", at = @At("RETURN"), cancellable = true)
+private void modifyReturn(CallbackInfoReturnable<Integer> cir) {
+    cir.setReturnValue(cir.getReturnValue() * 2);
+}
+
+// Inject before a specific method call
+@Inject(method = "foo()V",
+    at = @At(value = "INVOKE", target = "Lsome/Class;someMethod()V"))
+private void beforeSomeMethod(CallbackInfo ci) { /* ... */ }
+
+// Inject AFTER a method call (shift)
+@Inject(method = "foo()V",
+    at = @At(value = "INVOKE", target = "Lsome/Class;someMethod()V",
+             shift = At.Shift.AFTER))
+private void afterSomeMethod(CallbackInfo ci) { /* ... */ }
+```
+
+**Common `@At` values**: `HEAD`, `RETURN`, `TAIL`, `INVOKE`, `FIELD`, `NEW`
+
+### `@Redirect` (use sparingly — hard incompatibility!)
+```java
+@Redirect(method = "foo()V",
+    at = @At(value = "INVOKE", target = "Lsome/Class;someMethod(I)I"))
+private int redirectMethod(SomeClass instance, int arg) {
+    return MyClass.myAlternativeMethod(arg);
+}
+```
+Prefer `@WrapOperation` or `@ModifyExpressionValue` from MixinExtras instead.
+
+### MixinExtras (preferred for compatibility)
+```java
+// Modify return value compatibly
+@ModifyReturnValue(method = "getValue()I", at = @At("RETURN"))
+private int modifyReturnValue(int original) { return original * 2; }
+
+// Wrap a method call
+@WrapOperation(method = "foo()V",
+    at = @At(value = "INVOKE", target = "Lsome/Class;someMethod()V"))
+private void wrapSomeMethod(SomeClass instance, Operation<Void> original) {
+    // pre-logic
+    original.call(instance);
+    // post-logic
+}
+
+// Capture local variables
+@Inject(method = "foo()V", at = @At("INVOKE", target = "..."))
+private void withLocal(CallbackInfo ci, @Local LocalRef<String> localRef) {
+    localRef.set(localRef.get() + " modified");
+}
+```
+
+### `@Accessor` / `@Invoker` (read/write private fields, call private methods)
+```java
+@Mixin(SomeClass.class)
+public interface SomeClassAccessor {
+    @Accessor("privateField")
+    int getPrivateField();
+
+    @Accessor("privateField")
+    void setPrivateField(int value);
+
+    @Invoker("privateMethod")
+    void callPrivateMethod();
+}
+```
+
+### `@Unique` — prevent naming conflicts
+```java
+@Unique
+private int mymod$myCustomField = 0;
+```
+
+### Mixin Best Practices
+- ✅ Prefer `@Inject` over `@Redirect` and **never** use `@Overwrite`
+- ✅ Use MixinExtras (`@WrapOperation`, `@ModifyExpressionValue`) for compatible changes
+- ✅ Annotate all custom fields/methods with `@Unique` and prefix with `modid$`
+- ✅ Use events/Fabric API hooks before reaching for Mixins
+- ✅ Make Mixin classes abstract and package-private
+- ❌ Never copy Mixin examples verbatim — every case is different
+- For lambdas: inspect bytecode (MCDev or javap) to find the synthetic method name
+
+### Debugging Mixins
+- MCDev plugin adds breakpoint support directly in Mixin classes
+- Export mixins to inspect merged classes: add `-Dmixin.debug.export=true` to JVM args
+- Use `CAPTURE_FAILHARD` when capturing locals for immediate crash on mismatch
+
+---
+
+## 9. Access Wideners
+
+Widen access to private/protected/final Minecraft members without reflection.
+
+1. Create `mymod.accesswidener` in `src/main/resources/`:
+```
+accessWidener v2 named
+
+accessible class net/minecraft/some/PrivateClass
+accessible method net/minecraft/some/PrivateClass privateMethod ()V
+accessible field net/minecraft/some/PrivateClass privateField I
+mutable field net/minecraft/some/PrivateClass finalField I
+extendable class net/minecraft/some/PrivateClass
+extendable method net/minecraft/some/PrivateClass <init> ()V
+```
+2. Reference in `build.gradle`:
+```groovy
+loom { accessWidenerPath = file("src/main/resources/mymod.accesswidener") }
+```
+3. Reference in `fabric.mod.json`:
+```json
+"accessWidener": "mymod.accesswidener"
+```
+
+---
+
+## 10. Project Structure
+
+```
+src/
+├── main/
+│   ├── java/com/example/mymod/
+│   │   ├── MyMod.java                  # ModInitializer
+│   │   ├── items/ModItems.java
+│   │   ├── blocks/ModBlocks.java
+│   │   └── mixin/SomeMixin.java
+│   └── resources/
+│       ├── fabric.mod.json
+│       ├── mymod.mixins.json
+│       ├── mymod.accesswidener
+│       └── assets/mymod/
+│           ├── lang/en_us.json
+│           ├── textures/item/
+│           ├── textures/block/
+│           ├── models/item/
+│           ├── models/block/
+│           ├── blockstates/
+│           └── items/               # client items (1.21+)
+└── client/
+    ├── java/com/example/mymod/client/
+    │   └── MyModClient.java         # ClientModInitializer
+    └── resources/                   # client-only assets
+data/mymod/
+├── loot_table/blocks/
+├── recipe/
+└── tag/
+```
+
+---
+
+## 11. Java OOP Essentials (for Fabric Modding)
+
+### Core OOP Pillars
+| Concept | Minecraft/Fabric Example |
+|---|---|
+| **Encapsulation** | `private` fields + getters/setters, Mixin `@Accessor` |
+| **Inheritance** | `CustomBlock extends Block`, `CustomItem extends Item` |
+| **Polymorphism** | `InteractionResult.PASS/SUCCESS`, override `use()` in items |
+| **Abstraction** | `abstract class AbstractBlock`, interfaces like `BlockEntityProvider` |
+
+### Key Java Concepts Used in Fabric
+```java
+// Generics - type-safe registries
+public static <T extends Item> T register(String name, Function<Item.Properties, T> factory, ...) {}
+
+// Functional interfaces + lambdas - events
+AttackBlockCallback.EVENT.register((player, level, hand, pos, dir) -> { return InteractionResult.PASS; });
+
+// Records - packet payloads (Java 16+)
+public record MyPayload(BlockPos pos) implements CustomPacketPayload { ... }
+
+// Sealed classes / Pattern matching instanceof
+if (level instanceof ServerLevel serverLevel) { /* server-only */ }
+
+// Static initialization pattern
+public class ModItems {
+    public static final Item MY_ITEM = register(...);
+    public static void initialize() {} // triggers static init
+}
+```
+
+### Java Collections in Minecraft
+- `List<ItemStack>` – inventories, loot pools
+- `Map<ResourceLocation, ...>` – registries
+- `Set<BlockState>` – block state sets (tags)
+- Use `ImmutableList`/`ImmutableMap` (Guava, bundled) for read-only data
+
+### Common Patterns
+```java
+// Registry pattern (always use your MOD_ID as namespace)
+Identifier.fromNamespaceAndPath(MOD_ID, "my_thing")
+
+// Server-side check (CRITICAL - prevents desync)
+if (level.isClientSide()) return InteractionResult.PASS;
+
+// Ticks conversion: 20 ticks = 1 second
+int threeSeconds = 3 * 20; // 60 ticks
+
+// BlockPos manipulation
+BlockPos front = player.blockPosition().relative(player.getDirection(), 10);
+```
+
+---
+
+## 12. Debugging
+
+- **Logs**: `latest.log` in the Minecraft instance's `logs/` folder
+- **Breakpoints**: Set in IntelliJ, MCDev supports breakpoints directly in Mixin classes
+- **Conditional breakpoints**: right-click breakpoint → set boolean condition
+- **Stepping**: F8 (Step Over), F7 (Step Into), F9 (Resume)
+- **F3+T** in-game: reload resources without restarting (for texture/model changes)
+- **Applying code changes**: Fabric has a hot-swap tool; use "Apply changes" in IDEA
+- `LOGGER.info(...)` / `LOGGER.error(...)` — use your MOD_ID as logger name
+
+---
+
+## 13. Common Gotchas
+
+| Problem | Fix |
+|---|---|
+| Items/blocks invisible in game | Missing model JSON or blockstate JSON |
+| Crash on startup | Check `fabric.mod.json` entrypoint class path |
+| Mixin not applying | Verify `mymod.mixins.json` lists the mixin class, check method descriptor |
+| `NullPointerException` on server side | Check `level.isClientSide()` before client-only calls |
+| `assets.[modid]` directory not found | Use `/` not `.` in path: `assets/mymod/` |
+| Desync (client/server disagree) | Send packets to sync state; never modify server state from client directly |
+| Networking crash | Packet handlers must dispatch to main thread via `.execute()` |
+| `@Redirect` breaks with other mods | Use MixinExtras `@WrapOperation` instead |
+
+---
+
+## 14. Additional Resources
+
+- **Official Docs**: https://docs.fabricmc.net/develop/
+- **Fabric Wiki**: https://wiki.fabricmc.net/
+- **Template Generator**: https://fabricmc.net/develop/
+- **Mixin Wiki**: https://github.com/SpongePowered/Mixin/wiki
+- **MixinExtras Wiki**: https://github.com/LlamaLad7/MixinExtras/wiki
+- **Javadoc**: https://maven.fabricmc.net/docs/fabric-api-*/
+- **Mappings lookup**: https://mappings.dev / https://linkie.shedaniel.me/
+- **Fabric Discord**: `#mod-dev-general`, `#mod-dev-mixin` channels
+- **Example Mod repo**: https://github.com/FabricMC/fabric-example-mod
+
+> 📌 For detailed reference on specific topics (Rendering, Data Generation, World Generation,
+> Entities, Block Entities, Sounds, Enchantments, Potions) — read the sub-pages at
+> https://docs.fabricmc.net/develop/ and reference files in this skill's `/references/` folder.
